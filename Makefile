@@ -1,7 +1,7 @@
 TARGET = domineering
 LIBS = -lm
 CC = clang++
-CFLAGS = -g -Wall
+CFLAGS = -g -Wall -std=c++11
 
 .PHONY: default all clean
 

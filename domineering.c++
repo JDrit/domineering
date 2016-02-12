@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <pthread.h>
 #include <signal.h>
+#include <time.h>
 #include "board.h"
 
 
@@ -223,9 +224,11 @@ int main(int argc, char* argv[]) {
     DEBUG_MSG("generating board for " << m << "x" << n << endl);
 
     Board* board = new Board(m, n);
-
+    time_t start = time(NULL);
     Winner winner = solve(board);
+    time_t after = time(NULL);
     print_winner(winner);
+    cout << "seconds: " << (after - start) << endl;
 
     delete board;
     return 0;

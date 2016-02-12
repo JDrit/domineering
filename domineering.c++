@@ -24,8 +24,6 @@
 #define DEBUG_BOARD(board) do { } while ( false )
 #endif
 
-#define NUM_THREADS 5
-
 #define HORIZONTAL_WIN 1
 #define VERTICAL_WIN 2
 #define PLAYER_1 3
@@ -150,12 +148,8 @@ int solveThreadPool(Board *board, bool vertical) {
         }
     }
     thread_group.join_all();
-
     delete[] promises;
     delete moves;
-
-
-
     return winner;
 }
 

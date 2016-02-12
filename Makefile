@@ -1,5 +1,5 @@
 TARGET = domineering
-LIBS = -lm
+LIBS = -lm -pthread
 CC = g++
 CFLAGS = -g -Wall -std=c++11
 

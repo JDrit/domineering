@@ -1,8 +1,12 @@
 #include <iostream>
 #include <vector>
 #include <map>
+#include <queue>
 #include <cstdlib>
+#include <pthread.h>
+#include <signal.h>
 #include "board.h"
+
 
 #ifdef DEBUG
 #define DEBUG_MSG(str) do { std::cout << str << std::endl; } while( false )
@@ -12,9 +16,18 @@
 #define DEBUG_BOARD(board) do { } while ( false )
 #endif
 
+#define NUM_THREADS 5
+
 using namespace std;
 
-map<Board, Winner> known;
+struct Input {
+    Board *board;
+    bool verticalMove;
+};
+
+//map<Board, Winner> known;
+
+Winner solve(Board*, bool);
 
 void print_winner(Winner winner) {
     switch (winner) {
@@ -63,6 +76,23 @@ void print_winner(Winner winner) {
 }
 
 
+void *solveThread(void *in) {
+   struct Input *input = (struct Input*) in;
+    Board *board = input->board;
+    bool verticalMove = input->verticalMove;
+
+    Winner winner = solve(board, verticalMove);
+
+    delete board;
+    delete input;
+
+    if (winner == HORIZONTAL)
+        pthread_exit((void *) 1);
+    else
+        pthread_exit((void *) 2);
+}
+
+
 Winner solve(Board *board, bool verticalMove) {
     Winner winner;
 
@@ -78,36 +108,97 @@ Winner solve(Board *board, bool verticalMove) {
         }
     }
 
-    for (int i = 0 ; i < moves->size() ; i++) {
+    for (unsigned int i = 0 ; i < moves->size() ; i++) {
         // place move
         Board* newBoard = new Board(board);
         newBoard->place_move(verticalMove, moves->at(i));
 
-        Board b = *board;
-        map<Board, Winner>::iterator it = known.find(b);
-        if (it != known.end()) {
-            cout << "found" << endl;
-            Winner found = it->second;
-            print_winner(found);
-            return found;
-        } else {
-            winner = solve(newBoard, !verticalMove);
-            if ((verticalMove && winner == VERTICAL) ||
-                (!verticalMove && winner == HORIZONTAL)) {
-                break;
-            }
-
+        winner = solve(newBoard, !verticalMove);
+        delete newBoard;
+        if ((verticalMove && winner == VERTICAL) ||
+            (!verticalMove && winner == HORIZONTAL)) {
+            break;
         }
     }
     delete moves;
-    pair<Board, Winner> p = make_pair(board, winner);
-    known.insert(p);
     return winner;
 }
 
 Winner solve(Board *board) {
-    Winner win1 = solve(board, true);
-    Winner win2 = solve(board, false);
+    Winner win1 = HORIZONTAL;
+    Winner win2 = VERTICAL;
+
+    vector<int> *moves = board->next_moves(true);
+    int size = moves->size();
+    pthread_t* threads = new pthread_t[size];
+
+    for (int i = 0 ; i < size ; i++) {
+        Board *newBoard = new Board(board);
+        newBoard->place_move(true, moves->at(i));
+        struct Input *input = new struct Input;
+        input->board = newBoard;
+        input->verticalMove = false;
+
+        int rc = pthread_create(&threads[i], NULL, solveThread, (void *) input);
+        if (rc) {
+            cerr << "Error: unable to creat thread, " << rc << endl;
+            exit(-1);
+        }
+    }
+    for (int i = 0 ; i < size ; i++) {
+        void* status;
+        int rc = pthread_join(threads[i], &status);
+        long s = (long) status;
+        if (rc) {
+            cerr << "Error: unable to join thread, " << rc << endl;
+            exit(-1);
+        }
+        if (s == 2) {
+            win1 = VERTICAL;
+            cout << "exit early for vertical" << endl;
+            break;
+        }
+    }
+    cout << endl << endl;
+    delete moves;
+    delete[] threads;
+
+    moves = board->next_moves(false);
+    size = moves->size();
+    threads = new pthread_t[size];
+
+    for (int i = 0 ; i < size ; i++) {
+        Board *newBoard = new Board(board);
+        newBoard->place_move(false, moves->at(i));
+        struct Input *input = new struct Input;
+        input->board = newBoard;
+        input->verticalMove = true;
+
+        int rc = pthread_create(&threads[i], NULL, solveThread, (void *) input);
+        if (rc) {
+            cerr << "Error: unable to creat thread, " << rc << endl;
+            exit(-1);
+        }
+    }
+    for (int i = 0 ; i < size ; i++) {
+        void* status;
+        int rc = pthread_join(threads[i], &status);
+        long s = (long) status;
+        if (rc) {
+            cerr << "Error: unable to join thread, " << rc << endl;
+            exit(-1);
+        }
+        if (s == 1) {
+            win2 = HORIZONTAL;
+            cout << "exit early for horizontal" << endl;
+            break;
+        }
+    }
+    delete moves;
+    delete[] threads;
+
+    print_winner(win1);
+    print_winner(win2);
 
     if (win1 != win2) {
         if (win1 == VERTICAL) {

@@ -2,13 +2,12 @@
 
 using namespace std;
 
-inline uint64_t get_offset(int index) {
-    int boardIndex = index / (8 * sizeof(uint64_t));
+inline uint64_t get_offset(int index, int boardIndex) {
     int bitNum = index - (boardIndex * 8 * sizeof(uint64_t));
     return pow (2, bitNum);
 }
 
-int Board::get_index(int x, int y) {
+inline int Board::get_index(int x, int y) {
     return ((int) y_max) * x + y;
 }
 
@@ -36,19 +35,19 @@ Board::Board(Board* board) {
 inline bool Board::get_location(int x, int y) {
     int index = get_index(x, y);
     int boardIndex = index / (8 * sizeof(uint64_t));
-    uint64_t offset = get_offset(index);
+    uint64_t offset = get_offset(index, boardIndex);
     return (bitboards[boardIndex] & offset) != 0;
 }
 
 inline void Board::set_location(int index) {
     int boardIndex = index / (8 * sizeof(uint64_t));
-    uint64_t offset = get_offset(index);
+    uint64_t offset = get_offset(index, boardIndex);
     bitboards[boardIndex] = bitboards[boardIndex] | offset;
 }
 
 inline void Board::clear_location(int index) {
     int boardIndex = index / (8 * sizeof(uint64_t));
-    uint64_t offset = ~get_offset(index);
+    uint64_t offset = ~get_offset(index, boardIndex);
     bitboards[boardIndex] = bitboards[boardIndex]  & offset;
 }
 

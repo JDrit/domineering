@@ -1,6 +1,6 @@
 TARGET = domineering
-LIBS = -lm -pthread
-CC = g++
+LIBS = -lm -pthread -lboost_system -lboost_thread
+CC = clang++
 CFLAGS = -g -Wall -std=c++11
 
 .PHONY: default all clean

@@ -1,3 +1,6 @@
+#define BOOST_THREAD_PROVIDES_FUTURE
+#define BOOST_THREAD_PROVIDES_FUTURE_CONTINUATION
+
 #include <iostream>
 #include <vector>
 #include <map>
@@ -7,6 +10,10 @@
 #include <signal.h>
 #include <time.h>
 #include "board.h"
+#include <boost/thread.hpp>
+#include <boost/thread/thread.hpp>
+#include <boost/thread/future.hpp>
+
 
 
 #ifdef DEBUG
@@ -19,7 +26,13 @@
 
 #define NUM_THREADS 5
 
+#define HORIZONTAL_WIN 1
+#define VERTICAL_WIN 2
+#define PLAYER_1 3
+#define PLAYER_2 4
+
 using namespace std;
+using namespace boost;
 
 struct Input {
     Board *board;
@@ -30,29 +43,7 @@ struct Input {
 
 Winner solve(Board*, bool);
 
-void print_winner(Winner winner) {
-    switch (winner) {
-        case VERTICAL:
-            cout << "winner: vertical player" << endl;
-            break;
-        case HORIZONTAL:
-            cout << "winner: horizontal player" << endl;
-            break;
-        case PLAYER_1:
-            cout << "winner: player 1" << endl;
-            break;
-        case PLAYER_2:
-            cout << "winner: player 2" << endl;
-            break;
-        case NO_WINNER:
-            cout << "no winner" << endl;
-            break;
-        default:
-            cout << "winner undefined" << endl;
-    }
-}
-
- bool operator ==(const Board &l, const Board &r) {
+bool operator ==(const Board &l, const Board &r) {
     if (!(l.x_max == r.y_max && l.y_max == r.y_max && l.player == r.player)) {
         return false;
     } else {
@@ -77,8 +68,8 @@ void print_winner(Winner winner) {
 }
 
 
-void *solveThread(void *in) {
-   struct Input *input = (struct Input*) in;
+void solveThread(void* in, boost::promise<int> &p) {
+    struct Input *input = (struct Input*) in;
     Board *board = input->board;
     bool verticalMove = input->verticalMove;
 
@@ -88,9 +79,9 @@ void *solveThread(void *in) {
     delete input;
 
     if (winner == HORIZONTAL)
-        pthread_exit((void *) 1);
+        p.set_value(HORIZONTAL_WIN);
     else
-        pthread_exit((void *) 2);
+        p.set_value(VERTICAL_WIN);
 }
 
 
@@ -126,83 +117,54 @@ Winner solve(Board *board, bool verticalMove) {
     return winner;
 }
 
-Winner solve(Board *board) {
-    Winner win1 = HORIZONTAL;
-    Winner win2 = VERTICAL;
+int solveThreadPool(Board *board, bool vertical) {
+    int winner;
 
-    vector<int> *moves = board->next_moves(true);
+    if (vertical)
+        winner = HORIZONTAL_WIN;
+    else
+        winner = VERTICAL_WIN;
+
+    vector<int> *moves = board->next_moves(vertical);
     int size = moves->size();
-    pthread_t* threads = new pthread_t[size];
+    boost::thread_group thread_group;
+    boost::promise<int> *promises = new boost::promise<int>[size];
 
     for (int i = 0 ; i < size ; i++) {
         Board *newBoard = new Board(board);
-        newBoard->place_move(true, moves->at(i));
+        newBoard->place_move(vertical, moves->at(i));
         struct Input *input = new struct Input;
         input->board = newBoard;
-        input->verticalMove = false;
+        input->verticalMove = !vertical;
 
-        int rc = pthread_create(&threads[i], NULL, solveThread, (void *) input);
-        if (rc) {
-            cerr << "Error: unable to creat thread, " << rc << endl;
-            exit(-1);
-        }
+        thread_group.add_thread(new boost::thread(solveThread, input, std::ref(promises[i])));
     }
+
     for (int i = 0 ; i < size ; i++) {
-        void* status;
-        int rc = pthread_join(threads[i], &status);
-        long s = (long) status;
-        if (rc) {
-            cerr << "Error: unable to join thread, " << rc << endl;
-            exit(-1);
-        }
-        if (s == 2) {
-            win1 = VERTICAL;
-            cout << "exit early for vertical" << endl;
+        boost::future<int> f = promises[i].get_future();
+        int win = f.get();
+        if (win == VERTICAL_WIN) {
+            winner = VERTICAL_WIN;
+            DEBUG_MSG("exiting early for vertical");
             break;
         }
     }
+    thread_group.join_all();
+
+    delete[] promises;
     delete moves;
-    delete[] threads;
 
-    moves = board->next_moves(false);
-    size = moves->size();
-    threads = new pthread_t[size];
 
-    for (int i = 0 ; i < size ; i++) {
-        Board *newBoard = new Board(board);
-        newBoard->place_move(false, moves->at(i));
-        struct Input *input = new struct Input;
-        input->board = newBoard;
-        input->verticalMove = true;
 
-        int rc = pthread_create(&threads[i], NULL, solveThread, (void *) input);
-        if (rc) {
-            cerr << "Error: unable to creat thread, " << rc << endl;
-            exit(-1);
-        }
-    }
-    for (int i = 0 ; i < size ; i++) {
-        void* status;
-        int rc = pthread_join(threads[i], &status);
-        long s = (long) status;
-        if (rc) {
-            cerr << "Error: unable to join thread, " << rc << endl;
-            exit(-1);
-        }
-        if (s == 1) {
-            win2 = HORIZONTAL;
-            cout << "exit early for horizontal" << endl;
-            break;
-        }
-    }
-    delete moves;
-    delete[] threads;
+    return winner;
+}
 
-    print_winner(win1);
-    print_winner(win2);
+int solve(Board *board) {
+    int win1 = solveThreadPool(board, true);
+    int win2 = solveThreadPool(board, false);
 
     if (win1 != win2) {
-        if (win1 == VERTICAL) {
+        if (win1 == VERTICAL_WIN) {
             return PLAYER_1;
         } else {
             return PLAYER_2;
@@ -225,11 +187,10 @@ int main(int argc, char* argv[]) {
 
     Board* board = new Board(m, n);
     time_t start = time(NULL);
-    Winner winner = solve(board);
+    int winner = solve(board);
     time_t after = time(NULL);
-    print_winner(winner);
-    cout << "seconds: " << (after - start) << endl;
-
+    cout << "winner: " << winner << endl;
+    cout << "took seconds: " << (after - start) << endl;
     delete board;
     return 0;
 }

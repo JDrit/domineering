@@ -110,11 +110,12 @@ Winner solve(Board *board, bool verticalMove) {
 
     for (unsigned int i = 0 ; i < moves->size() ; i++) {
         // place move
-        Board* newBoard = new Board(board);
-        newBoard->place_move(verticalMove, moves->at(i));
+        //Board* newBoard = new Board(board);
+        board->place_move(verticalMove, moves->at(i));
 
-        winner = solve(newBoard, !verticalMove);
-        delete newBoard;
+        winner = solve(board, !verticalMove);
+        board->remove_move(verticalMove, moves->at(i));
+        //delete newBoard;
         if ((verticalMove && winner == VERTICAL) ||
             (!verticalMove && winner == HORIZONTAL)) {
             break;
@@ -159,7 +160,6 @@ Winner solve(Board *board) {
             break;
         }
     }
-    cout << endl << endl;
     delete moves;
     delete[] threads;
 

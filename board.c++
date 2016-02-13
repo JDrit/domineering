@@ -20,7 +20,6 @@ Board::Board(const unsigned char x, const unsigned char y) {
     for (int i = 0 ; i < num ; i++) {
         bitboards[i] = 0;
     }
-    winner = NO_WINNER;
 }
 
 Board::Board(Board* board) {

@@ -1,45 +1,7 @@
-#define BOOST_THREAD_PROVIDES_FUTURE
-#define BOOST_THREAD_PROVIDES_FUTURE_CONTINUATION
-
-#include <iostream>
-#include <vector>
-#include <map>
-#include <queue>
-#include <cstdlib>
-#include <pthread.h>
-#include <signal.h>
-#include <time.h>
-#include "board.h"
-#include <boost/thread.hpp>
-#include <boost/thread/thread.hpp>
-#include <boost/thread/future.hpp>
-
-
-
-#ifdef DEBUG
-#define DEBUG_MSG(str) do { std::cout << str << std::endl; } while( false )
-#define DEBUG_BOARD(board) do { board->print(); } while ( false )
-#else
-#define DEBUG_MSG(str) do { } while ( false )
-#define DEBUG_BOARD(board) do { } while ( false )
-#endif
-
-#define HORIZONTAL_WIN 1
-#define VERTICAL_WIN 2
-#define PLAYER_1 3
-#define PLAYER_2 4
+#include "domineering.hpp"
 
 using namespace std;
 using namespace boost;
-
-struct Input {
-    Board *board;
-    bool verticalMove;
-};
-
-//map<Board, Winner> known;
-
-Winner solve(Board*, bool);
 
 bool operator ==(const Board &l, const Board &r) {
     if (!(l.x_max == r.y_max && l.y_max == r.y_max && l.player == r.player)) {
@@ -65,26 +27,22 @@ bool operator ==(const Board &l, const Board &r) {
     return true;
 }
 
-
 void solveThread(void* in, boost::promise<int> &p) {
     struct Input *input = (struct Input*) in;
     Board *board = input->board;
     bool verticalMove = input->verticalMove;
 
-    Winner winner = solve(board, verticalMove);
+    int winner = solve(board, verticalMove);
 
     delete board;
     delete input;
 
-    if (winner == HORIZONTAL)
-        p.set_value(HORIZONTAL_WIN);
-    else
-        p.set_value(VERTICAL_WIN);
+    p.set_value(winner);
 }
 
 
-Winner solve(Board *board, bool verticalMove) {
-    Winner winner;
+int solve(Board *board, bool verticalMove) {
+    int winner;
 
     DEBUG_BOARD(board);
     vector<int> *moves = board->next_moves(verticalMove);
@@ -92,22 +50,21 @@ Winner solve(Board *board, bool verticalMove) {
     if (moves->size() == 0) {
         DEBUG_MSG("no more moves" << endl);
         if (verticalMove) {
-            winner = HORIZONTAL;
+            winner = HORIZONTAL_WIN;
         } else {
-            winner = VERTICAL;
+            winner = VERTICAL_WIN;
         }
     }
 
     for (unsigned int i = 0 ; i < moves->size() ; i++) {
         // place move
-        //Board* newBoard = new Board(board);
         board->place_move(verticalMove, moves->at(i));
 
         winner = solve(board, !verticalMove);
         board->remove_move(verticalMove, moves->at(i));
         //delete newBoard;
-        if ((verticalMove && winner == VERTICAL) ||
-            (!verticalMove && winner == HORIZONTAL)) {
+        if ((verticalMove && winner == VERTICAL_WIN) ||
+            (!verticalMove && winner == HORIZONTAL_WIN)) {
             break;
         }
     }

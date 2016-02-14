@@ -5,7 +5,7 @@ CC = clang++
 CFLAGS = -g -Wall -std=c++11
 
 NVCC = nvcc
-NVCCFLAGS = -I$(CUDA_INSTALL_PATH)/include -arch=sm_20
+NVCCFLAGS = -I$(CUDA_INSTALL_PATH)/include -arch=compute_30
 CUDA_OUT = cuda
 
 .PHONY: default all clean

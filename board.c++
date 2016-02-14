@@ -12,6 +12,7 @@ inline int Board::get_index(int x, int y) {
 }
 
 Board::Board(const unsigned char x, const unsigned char y) {
+    valid = true;
     x_max = x;
     y_max = y;
     player = true;
@@ -23,6 +24,7 @@ Board::Board(const unsigned char x, const unsigned char y) {
 }
 
 Board::Board(Board* board) {
+    valid = true;
     x_max = board->x_max;
     y_max = board->y_max;
     player = board->player;
@@ -69,6 +71,7 @@ vector<int>* Board::next_moves(bool verticalMove) {
             }
         }
     }
+    cout << "size: " << moves->size() << endl;
     return moves;
 }
 

@@ -9,6 +9,7 @@ using namespace std;
 
 class Board {
     public:
+        bool valid;
         unsigned char x_max;
         unsigned char y_max;
         bool player;

@@ -10,7 +10,7 @@ CUDA_OUT = cuda
 
 .PHONY: default all clean
 
-default: $(TARGET)
+default: cuda
 all: default
 
 OBJECTS = $(patsubst %.c++, %.o, $(wildcard *.c++))

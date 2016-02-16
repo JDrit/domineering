@@ -23,7 +23,7 @@ HEADERS = $(wildcard *.h)
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
 cuda: cuda.cu.o board.o
-	$(NVCC) cuda.cu.o board.o -o $(CUDA_OUT)
+	$(NVCC) cuda.cu.o board.o -g -o $(CUDA_OUT)
 
 .PRECIOUS: $(TARGET) $(OBJECTS)
 

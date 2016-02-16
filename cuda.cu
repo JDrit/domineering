@@ -14,6 +14,11 @@ typedef struct {
     uint64_t bitboards[2];
 } Board;
 
+void outOfMemHandler() {
+    std::cerr << "Unable to satisfy request for memory\n";
+    std::abort();
+}
+
 inline void __CUDA_SAFE_CALL( cudaError err, const char *file, const int line ) {
     #ifdef CUDA_ERROR_CHECK
     if ( cudaSuccess != err ) {
@@ -44,19 +49,45 @@ inline void __CUDA_CHECK_ERROR( const char *file, const int line ) {
     #endif
 }
 
+inline bool boards_equal(Board *b1, Board *b2) {
+    return b1->bitboards[0] == b2->bitboards[0] && b1->bitboards[1] == b2->bitboards[1];
+}
+
+int compare_boards(const void *v1, const void *v2) {
+    Board *b1 = (Board*) v1;
+    Board *b2 = (Board*) v2;
+    return b1->bitboards[0] < b2->bitboards[0];
+}
+
 __host__ __device__ inline bool get_location(Board *board, int y_max, int x, int y) {
     //TODO this will probs break for bigger boards
     int index = GET_INDEX(y_max, x, y);
-    int boardIndex = index / (8 * sizeof(uint64_t));
-    int offset = pow(2.0, index + 1);
-    return (board->bitboards[boardIndex] & offset) != 0;
+    int boardIndex;
+    double offset;
+    
+    if (index < 63) { // board 1
+        boardIndex = 0;
+        offset = pow(2.0, index + 1);
+    } else { // board 2
+        boardIndex = 1;
+        offset = pow(2.0, index - 63);
+    } 
+    return (board->bitboards[boardIndex] & (int) offset) != 0;
 }
 
 __device__ inline void set_location(Board *board, int y_max, int x, int y) {
     //TODO this will probs break for bigger boards
     int index = GET_INDEX(y_max, x, y);
-    int boardIndex = index / (8 * sizeof(uint64_t));
-    uint64_t offset = pow(2.0, index + 1);
+    int boardIndex;
+    int offset;
+
+    if (index < 63) { // board 1
+        boardIndex = 0;
+        offset = pow(2.0, index + 1);
+    } else { // board 2
+        boardIndex = 1;
+        offset = pow(2.0, index - 63);
+    } 
     board->bitboards[boardIndex] = board->bitboards[boardIndex] | offset;
 }
 
@@ -138,6 +169,10 @@ __global__ void next_boards(Board *input, Board *output, int branching,
 }
 
 void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, int depth) {
+    if (inCount == 0) {
+        printf("\nno more moves at depth: %d\n", depth);
+        return;
+    }
     printf("\nstarting for for depth: %d\n", depth);
     Board *dev_input;
     Board *dev_output;
@@ -145,15 +180,16 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
     int inputSize = inCount * sizeof(Board);
 
     //TODO might be wrong branching count
-    int branching = (x_max - 1) * y_max - 2 * depth;
+    int branching = x_max * y_max - 2 * depth;
     int outCount = inCount * branching;
     int outputSize = outCount * sizeof(Board);
+
+    printf("input count     : %d\n", inCount);
+    printf("branching count : %d\n", branching);
+    printf("output count    : %d\n", outCount);
+
     Board *output = new Board[outCount];
 
-    printf("input count: %d\n", inCount);
-    printf("branching count: %d\n", branching);
-    printf("output count: %d\n", outCount);
-    
     CUDA_SAFE_CALL(cudaMalloc((void **) &dev_input, inputSize));
     CUDA_SAFE_CALL(cudaMalloc((void **) &dev_output, outputSize));
     
@@ -169,7 +205,6 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
     for (int i = 0 ; i < outCount ; i++ ) {
         Board board = (Board) output[i];
         if (is_valid(&board) == true) {
-            print_board(&board, x_max, y_max);
             next = true;
             break;
         }
@@ -177,30 +212,48 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
     
     CUDA_SAFE_CALL(cudaFree(dev_input));
     CUDA_SAFE_CALL(cudaFree(dev_output));
-
     
     if (next) {
-        int count = 0;
-        Board *newOutput = new Board[outCount];
+        int validCount = 0;
+        Board *validOutput = new Board[outCount];
         for (int i = 0 ; i < outCount ; i++) {
             if (is_valid(&output[i]) == true) {
-                memcpy(&newOutput[count++], &output[i], sizeof(Board));
+                memcpy(&validOutput[validCount++], &output[i], sizeof(Board));
             }
         }
-        printf("actual: %d\n", count);
+        
+        // sorts the new output so that duplicates can be removed
+        qsort(validOutput, validCount, sizeof(Board), compare_boards);
+        Board *noDuplicates = new Board[outCount];
+        int dupCount = 1;
+
+        Board last = validOutput[0];
+        memcpy(&noDuplicates[0], &validOutput[0], sizeof(Board));
+        
+        for (int i = 1 ; i < validCount ; i++) {
+            if (!boards_equal(&last, &validOutput[i])) {
+                memcpy(&noDuplicates[dupCount++], &validOutput[i], sizeof(Board));
+                last = validOutput[i];
+            }
+        }
+        printf("valid count     : %d\n", validCount);
+        printf("duplicate count : %d\n", dupCount);
         delete[] output;
-        work_down(newOutput, x_max, y_max, count, !vertical, depth + 1);
+        delete[] validOutput;
+        work_down(noDuplicates, x_max, y_max, dupCount, !vertical, depth + 1);
+        delete[] noDuplicates;
     } else {
         printf("no more moves\n");
         delete[] output;
-        delete[] input;
     }
 }
 
 // main routine that executes on the host
 int main(void) {
-    unsigned char x = 5;
-    unsigned char y = 5;
+    unsigned char x = 30;
+    unsigned char y = 2;
+
+    std::set_new_handler(outOfMemHandler);
 
     printf("Board size: %d\n", sizeof(Board));
 
@@ -212,6 +265,6 @@ int main(void) {
     printf("initial\n");
     print_board(&inputBoards[0], x, y);
     work_down(inputBoards, x, y, 1, true, 0);
-    
+    delete[] inputBoards; 
     return 0;
 }

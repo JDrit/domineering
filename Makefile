@@ -20,10 +20,10 @@ HEADERS = $(wildcard *.h)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 %.cu.o: %.cu
-	$(NVCC) $(NVCCFLAGS) -c $< -o $@
+	$(NVCC) -G -g $(NVCCFLAGS) -c $< -o $@
 
 cuda: cuda.cu.o board.o
-	$(NVCC) cuda.cu.o board.o -g -o $(CUDA_OUT)
+	$(NVCC) -Xcompiler "-std=c++0x" -G -g cuda.cu.o board.o -o $(CUDA_OUT)
 
 .PRECIOUS: $(TARGET) $(OBJECTS)
 

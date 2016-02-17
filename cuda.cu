@@ -2,7 +2,14 @@
 #include <stdlib.h>
 #include <cuda.h>
 #include <time.h>
+#include <sys/time.h>
 #include <iostream>
+
+#include <thrust/sort.h>
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
+#include <thrust/remove.h>
+#include <thrust/unique.h>
 
 #define THREADS_PER_BLOCK 1024
 
@@ -11,13 +18,19 @@
 #define CUDA_CHECK_ERROR()    __CUDA_CHECK_ERROR( __FILE__, __LINE__ )
 #define GET_INDEX(y_max, x, y) (y_max * x + y)
 #define LOG_PRINTF(...) do { \
-    time_t ltime = time(NULL); \
-    printf("%.24s: ",asctime( localtime(&ltime))); \
+    struct timeval time_now; \
+    gettimeofday(&time_now, NULL); \
+    tm* time_str_tm = gmtime(&time_now.tv_sec); \
+    printf("%02i:%02i:%02i:%06i : ", time_str_tm->tm_hour, time_str_tm->tm_min, \
+            time_str_tm->tm_sec, time_now.tv_usec); \
     printf(__VA_ARGS__); \
 } while (0) 
 #define LOG_FPRINTF(f, ...) do { \
-    time_t ltime = time(NULL); \
-    fprintf(f, "%.24s: ",asctime( localtime(&ltime))); \
+    struct timeval time_now; \
+    gettimeofday(&time_now, NULL); \
+    tm* time_str_tm = gmtime(&time_now.tv_sec); \
+    fprintf(f, "%02i:%02i:%02i:%06i : ", time_str_tm->tm_hour, time_str_tm->tm_min, \
+            time_str_tm->tm_sec, time_now.tv_usec); \
     fprintf(f, __VA_ARGS__); \
 } while (0) 
 
@@ -61,15 +74,57 @@ inline void __CUDA_CHECK_ERROR( const char *file, const int line ) {
     }
     #endif
 }
-
-inline bool boards_equal(Board *b1, Board *b2) {
-    return b1->bitboards[0] == b2->bitboards[0] && b1->bitboards[1] == b2->bitboards[1];
+__host__ __device__ inline bool is_valid(const Board *board) {
+    return board->bitboards[0] & 1 != 0;
 }
+
+__host__ __device__ inline void set_valid(Board *board, bool valid) {
+    if (valid) {
+        board->bitboards[0] = board->bitboards[0] | 1;    
+    } else {
+        board->bitboards[0] = board->bitboards[0] & 0;
+    }
+}
+
+inline bool boards_equal(const Board *b1, const Board *b2) {
+    return memcmp(b1, b2, sizeof(Board)) == 0;
+}
+
+
+
+
 
 int compare_boards(const void *v1, const void *v2) {
     Board *b1 = (Board*) v1;
     Board *b2 = (Board*) v2;
-    return b1->bitboards[0] < b2->bitboards[0];
+
+    if (!is_valid(b1) && !is_valid(b2)) {
+        return 0;
+    } else if (!is_valid(b1) && is_valid(b2)) {
+        return 1;
+    } else if (is_valid(b1) && !is_valid(b2)) {
+        return -1;
+    } else {
+        return memcmp(b1, b2, sizeof(Board));
+    } 
+}
+
+__device__ bool operator ==(const Board& b1, const Board& b2) {
+    return b1.bitboards[0] == b2.bitboards[0] && b2.bitboards[1] == b2.bitboards[1];
+}
+
+__device__ bool operator <(const Board& b1, const Board& b2) {
+    if (!is_valid(&b1) && !is_valid(&b2)) {
+        return 0;
+    } else if (!is_valid(&b1) && is_valid(&b2)) {
+        return -1;
+    } else if (is_valid(&b1) && !is_valid(&b2)) {
+        return 1;
+    } else if (b1.bitboards[0] == b2.bitboards[0]) {
+        return b1.bitboards[1] < b2.bitboards[1];
+    } else {
+        return b1.bitboards[0] < b2.bitboards[0];
+    }
 }
 
 __host__ __device__ inline bool get_location(Board *board, int y_max, int x, int y) {
@@ -105,18 +160,6 @@ __host__ __device__ inline void set_location(Board *board, int y_max, int x, int
 }
 
 
-__host__ __device__ inline bool is_valid(Board *board) {
-    return board->bitboards[0] & 1 != 0;
-}
-
-__host__ __device__ inline void set_valid(Board *board, bool valid) {
-    if (valid) {
-        board->bitboards[0] = board->bitboards[0] | 1;    
-    } else {
-        board->bitboards[0] = board->bitboards[0] & 0;
-    }
-}
-
 __host__ __device__ void print_board(Board *board, int x_max, int y_max) {
     printf("size: (%d, %d)\n", x_max, y_max);
     printf("   ");
@@ -136,6 +179,13 @@ __host__ __device__ void print_board(Board *board, int x_max, int y_max) {
         printf("\n");
     }
 }
+
+struct is_valid_struct {
+    __host__ __device__ bool operator()(const Board b) {
+        return !is_valid(&b);
+    }
+};
+
 
 __device__ inline void copy_left(Board *board, int x_max, int y_max) {
     int middle = y_max / 2;
@@ -223,6 +273,9 @@ __global__ void next_boards(Board *input, Board *output, int branching,
             }
         }
     }
+
+
+
     for (int i = 0 ; i < count ; i++) {
         Board *board = &output[index * branching + i];
         set_valid(board, true);
@@ -262,11 +315,8 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
 
     
     LOG_PRINTF("best            : %d\n", best);
-    
     LOG_PRINTF("input count     : %d\n", inCount);
-    
     LOG_PRINTF("branching count : %d\n", branching);
-    
     LOG_PRINTF("output count    : %d\n", outCount);
 
     Board *output = new Board[outCount];
@@ -284,7 +334,6 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
     
     CUDA_SAFE_CALL(cudaMemcpy(output, dev_output, outputSize, cudaMemcpyDeviceToHost));
 
-    
     LOG_PRINTF("gpu done...\n");
 
     bool next = false;
@@ -292,6 +341,7 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
         Board board = (Board) output[i];
         if (is_valid(&board) == true) {
             next = true;
+            print_board(&board, x_max, y_max);
             break;
         }
     }
@@ -301,36 +351,61 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
     
     if (next) {
         
-        //TODO fix performance of this section
-        
-        int validCount = 0;
-        Board *validOutput = new Board[outCount];
+        LOG_PRINTF("starting to sort...\n");
+        thrust::host_vector<Board> h_vec(outCount);
         for (int i = 0 ; i < outCount ; i++) {
-            if (is_valid(&output[i]) == true) {
-                memcpy(&validOutput[validCount++], &output[i], sizeof(Board));
-            }
+            h_vec[i] = output[i];
         }
 
-        // sorts the new output so that duplicates can be removed
-        qsort(validOutput, validCount, sizeof(Board), compare_boards);
+        // copies the host vector to the device
+        thrust::device_vector<Board> d_vec(h_vec.begin(), h_vec.end());
+        
+        // removes invalid boards
+        thrust::device_vector<Board>::iterator new_end = thrust::remove_if(
+                d_vec.begin(), d_vec.end(), is_valid_struct());
+        // erases the invalid boards
+        d_vec.erase(new_end, d_vec.end());
+        
+        // sorts the boards so duplicates are next to each other 
+        thrust::sort(d_vec.begin(), d_vec.end());
+
+        // removes the dupliates next to each other
+        new_end = thrust::unique(d_vec.begin(), d_vec.end()); 
+        d_vec.erase(new_end, d_vec.end());
+
+        // copies the device vector back to the host
+        std::vector<Board> stl_vector(d_vec.size());
+        thrust::copy(d_vec.begin(), d_vec.end(), stl_vector.begin());
+        
+        for (int i = 0 ; i < stl_vector.size() ; i++ ) {
+            print_board(&stl_vector[i], x_max, y_max);
+        }
+
+        exit(1);
+
+        qsort(output, outCount, sizeof(Board), compare_boards);
+        CUDA_CHECK_ERROR();
+
+        LOG_PRINTF("sorting done...\n");
         Board *noDuplicates = new Board[outCount];
         int dupCount = 1;
 
-        Board last = validOutput[0];
-        memcpy(&noDuplicates[0], &validOutput[0], sizeof(Board));
+        Board last = output[0];
+        memcpy(&noDuplicates[0], &output[0], sizeof(Board));
         
-        for (int i = 1 ; i < validCount ; i++) {
-            if (!boards_equal(&last, &validOutput[i])) {
-                memcpy(&noDuplicates[dupCount++], &validOutput[i], sizeof(Board));
-                last = validOutput[i];
+        for (int i = 1 ; i < outCount ; i++) {
+            if (is_valid(&output[i])) {
+                if (!boards_equal(&last, &output[i])) {
+                    memcpy(&noDuplicates[dupCount++], &output[i], sizeof(Board));
+                    last = output[i];
+                }
+            } else {
+                break;
             }
         }
         
-        LOG_PRINTF("valid count     : %d\n", validCount);
-        
         LOG_PRINTF("duplicate count : %d\n", dupCount);
         delete[] output;
-        delete[] validOutput;
 
         int size = 3000000;
         if (dupCount > size) {
@@ -338,13 +413,14 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
             
             LOG_PRINTF("splitting...\n");
 
-            for (int i = 0 ; i < dupCount ; i += size) {
+            work_down(noDuplicates, x_max, y_max, size, !vertical, depth + 1);
+            /*for (int i = 0 ; i < dupCount ; i += size) {
                 if (dupCount < i + size) {
                     work_down(noDuplicates + i, x_max, y_max, dupCount - i, !vertical, depth + 1);
                 } else {
                     work_down(noDuplicates + i, x_max, y_max, size, !vertical, depth + 1);
                 }
-            }
+            }*/
         } else {
             work_down(noDuplicates, x_max, y_max, dupCount, !vertical, depth + 1);
         }
@@ -358,8 +434,8 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
 
 // main routine that executes on the host
 int main(void) {
-    unsigned char x = 6;
-    unsigned char y = 6;
+    unsigned char x = 5;
+    unsigned char y = 5;
 
     std::set_new_handler(outOfMemHandler);
 

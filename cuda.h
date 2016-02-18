@@ -18,7 +18,6 @@
 #define CUDA_ERROR_CHECK
 #define CUDA_SAFE_CALL( err ) __CUDA_SAFE_CALL( err, __FILE__, __LINE__ )
 #define CUDA_CHECK_ERROR()    __CUDA_CHECK_ERROR( __FILE__, __LINE__ )
-#define GET_INDEX(y_max, x, y) (y_max * x + y)
 #define LOG_PRINTF(...) do { \
     struct timeval time_now; \
     gettimeofday(&time_now, NULL); \

@@ -1,5 +1,8 @@
 #include "cuda.h"
 
+#define X_MAX 7
+#define Y_MAX 7
+
 using namespace std;
 
 void outOfMemHandler() {
@@ -27,6 +30,24 @@ inline void __CUDA_CHECK_ERROR( const char *file, const int line ) {
     }
    #endif
 }
+
+__device__ double board_distance(Board *board) {
+    double distance = 0;
+
+    // TODO change this
+    int middle_x = X_MAX / 2;
+    int middle_y = Y_MAX / 2; 
+
+    for (int x = 0 ; x < X_MAX ; x++) {
+        for (int y = 0 ; y < Y_MAX ; y++) {
+            if (get_location(board, Y_MAX, x, y) == true) {
+                distance += sqrt(pow(x - middle_x, 2.0) + pow(y - middle_y, 2.0));
+            }
+        }
+    }
+    return distance;
+}
+
 
 
 // blockIdx.x  = block index within the grid
@@ -71,15 +92,97 @@ __global__ void next_boards(Board *input, Board *output, int branching,
     for (int i = 0 ; i < count ; i++) {
         Board *board = &output[index * branching + i];
         set_valid(board, true);
-        copy_left(board, x_max, y_max);
+        board->distance = board_distance(board);
+        //copy_left(board, x_max, y_max);
     }
     for (int i = count ; i < branching ; i++) {
         set_valid(&output[index * branching + i], false);
     }
 }
 
+__device__ bool vertical_equal(Board *b1, Board *b2) {
+    Board tmp;
+    memset(&tmp, 0, sizeof(Board));
+    set_valid(&tmp, true);
+
+    for (int x = 0 ; x < X_MAX ; x++) {
+        for (int y = 0 ; y < Y_MAX ; y++) {
+            if (get_location(b1, Y_MAX, x, y) == true) {
+                set_location(&tmp, Y_MAX, x, Y_MAX - y - 1);
+            }
+        }
+    }
+    return tmp.bitboards[0] == b2->bitboards[0] && tmp.bitboards[1] == b2->bitboards[1];
+}
+
+__device__ bool horizontal_equal(Board *b1, Board *b2) {
+    Board tmp;
+    memset(&tmp, 0, sizeof(Board));
+    set_valid(&tmp, true);
+
+    for (int x = 0 ; x < X_MAX ; x++) {
+        for (int y = 0 ; y < Y_MAX ; y++) {
+            if (get_location(b1, Y_MAX, x, y) == true) {
+                set_location(&tmp, Y_MAX, X_MAX  - x - 1, y);
+            }
+        }
+    }
+    return tmp.bitboards[0] == b2->bitboards[0] && tmp.bitboards[1] == b2->bitboards[1];
+}
+
+
+__device__ bool rotate_equal(Board *b1, Board *b2) {
+    Board tmp;
+    memset(&tmp, 0, sizeof(Board));
+    set_valid(&tmp, true);
+
+    for (int x = 0; x < X_MAX; x++) {
+        for (int y = 0; y < Y_MAX; y++) {
+            if (get_location(b1, Y_MAX, Y_MAX - y - 1, x) == true) {
+                set_location(&tmp, Y_MAX, x, y);
+            } 
+        }
+    }
+    bool result = tmp.bitboards[0] == b2->bitboards[0] && tmp.bitboards[1] == b2->bitboards[1];
+    if (result == true)
+        return true;
+
+    memset(&tmp, 0, sizeof(Board));
+    set_valid(&tmp, true);
+
+    for (int x = 0 ; x < X_MAX ; x++) {
+        for (int y = 0 ; y < Y_MAX ; y++) {
+            if (get_location(b1, Y_MAX, x, y) == true) {
+                set_location(&tmp, Y_MAX, X_MAX - x - 1, Y_MAX - y - 1);
+            }
+        }
+    }
+    result = tmp.bitboards[0] == b2->bitboards[0] && tmp.bitboards[1] == b2->bitboards[1];
+    if (result == true)
+        return true;
+
+    memset(&tmp, 0, sizeof(Board));
+    set_valid(&tmp, true);
+
+    for (int x = 0 ; x < X_MAX ; x++) {
+        for (int y= 0 ; y < Y_MAX ; y++) {
+            if (get_location(b1, Y_MAX, y, X_MAX - x -1) == true) {
+                set_location(&tmp, Y_MAX, x, y);
+            }
+        }
+    }
+
+    return (tmp.bitboards[0] == b2->bitboards[0] && 
+            tmp.bitboards[1] == b2->bitboards[1]) ||
+        vertical_equal(&tmp, b2) || horizontal_equal(&tmp, b2);
+}
+
 __device__ bool operator ==(const Board& b1, const Board& b2) {
-    return b1.bitboards[0] == b2.bitboards[0] && b2.bitboards[1] == b2.bitboards[1];
+    Board board1 = b1;
+    Board board2 = b2;
+    return (b1.bitboards[0] == b2.bitboards[0] && b2.bitboards[1] == b2.bitboards[1]) ||
+        rotate_equal(&board1, &board2) || vertical_equal(&board1, &board2) ||
+        horizontal_equal(&board1, &board2);
 }
 
 __device__ bool operator <(const Board& b1, const Board& b2) {
@@ -89,10 +192,8 @@ __device__ bool operator <(const Board& b1, const Board& b2) {
         return -1;
     } else if (is_valid(&b1) && !is_valid(&b2)) {
         return 1;
-    } else if (b1.bitboards[0] == b2.bitboards[0]) {
-        return b1.bitboards[1] < b2.bitboards[1];
     } else {
-        return b1.bitboards[0] < b2.bitboards[0];
+        return b1.distance < b2.distance;
     }
 }
 
@@ -120,31 +221,26 @@ void work_down(Board* dev_input, int x_max, int y_max, int inCount, bool vertica
     next_boards<<<inCount, 1>>>(dev_input, dev_output, branching, x_max, y_max, vertical);
     CUDA_CHECK_ERROR();
 
-    LOG_PRINTF("custom\n"); 
-    
     size_t N = outCount;
     CUDA_SAFE_CALL(cudaFree(dev_input));
     thrust::device_ptr<Board> dev_ptr = thrust::device_pointer_cast(dev_output);
     thrust::device_vector<Board> d_vec(dev_ptr, dev_ptr + N);
-    LOG_PRINTF("copy\n"); 
+    
     // removes
     thrust::device_vector<Board>::iterator new_end = 
         thrust::remove_if(d_vec.begin(), d_vec.end(), is_valid_struct());
-    LOG_PRINTF("size: %d\n", d_vec.size()); 
+    LOG_PRINTF("removed invalid\n");   
     // erases the invalid boards
     d_vec.erase(new_end, d_vec.end());
-    LOG_PRINTF("erase\n");     
+    
     // sorts the boards so duplicates are next to each other 
-    LOG_PRINTF("size: %d\n", d_vec.size());    
     thrust::sort(d_vec.begin(), d_vec.end());
-       
-    LOG_PRINTF("sort\n");
-
+    LOG_PRINTF("sorted\n");
     // removes the dupliates next to each other
     new_end = thrust::unique(d_vec.begin(), d_vec.end()); 
     d_vec.erase(new_end, d_vec.end());
 
-    LOG_PRINTF("unique\n");
+    LOG_PRINTF("removed duplicates\n");
 
     size_t size = d_vec.size();
     LOG_PRINTF("output size     : %d\n", size);
@@ -167,8 +263,8 @@ void work_down(Board* dev_input, int x_max, int y_max, int inCount, bool vertica
 
 // main routine that executes on the host
 int main(void) {
-    unsigned char x = 7;
-    unsigned char y = 7;
+    unsigned char x = X_MAX;
+    unsigned char y = Y_MAX;
 
     std::set_new_handler(outOfMemHandler);
 

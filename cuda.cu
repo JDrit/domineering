@@ -1,45 +1,6 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <cuda.h>
-#include <time.h>
-#include <sys/time.h>
-#include <iostream>
-
-#include <thrust/sort.h>
-#include <thrust/host_vector.h>
-#include <thrust/device_vector.h>
-#include <thrust/remove.h>
-#include <thrust/unique.h>
-
-
-#define THREADS_PER_BLOCK 1024
-
-#define CUDA_ERROR_CHECK
-#define CUDA_SAFE_CALL( err ) __CUDA_SAFE_CALL( err, __FILE__, __LINE__ )
-#define CUDA_CHECK_ERROR()    __CUDA_CHECK_ERROR( __FILE__, __LINE__ )
-#define GET_INDEX(y_max, x, y) (y_max * x + y)
-#define LOG_PRINTF(...) do { \
-    struct timeval time_now; \
-    gettimeofday(&time_now, NULL); \
-    tm* time_str_tm = gmtime(&time_now.tv_sec); \
-    printf("%02i:%02i:%02i:%06i : ", time_str_tm->tm_hour, time_str_tm->tm_min, \
-            time_str_tm->tm_sec, time_now.tv_usec); \
-    printf(__VA_ARGS__); \
-} while (0) 
-#define LOG_FPRINTF(f, ...) do { \
-    struct timeval time_now; \
-    gettimeofday(&time_now, NULL); \
-    tm* time_str_tm = gmtime(&time_now.tv_sec); \
-    fprintf(f, "%02i:%02i:%02i:%06i : ", time_str_tm->tm_hour, time_str_tm->tm_min, \
-            time_str_tm->tm_sec, time_now.tv_usec); \
-    fprintf(f, __VA_ARGS__); \
-} while (0) 
+#include "cuda.h"
 
 using namespace std;
-
-typedef struct {
-    uint64_t bitboards[2];
-} Board;
 
 void outOfMemHandler() {
     LOG_FPRINTF(stderr, "Unable to satisfy request for memory\n");
@@ -64,16 +25,7 @@ inline void __CUDA_CHECK_ERROR( const char *file, const int line ) {
                 line, cudaGetErrorString(err));
         exit( -1 );
     }
-    
-    // More careful checking. However, this will affect performance.
-    // Comment away if needed.
-    err = cudaDeviceSynchronize();
-    if( cudaSuccess != err ) {
-        LOG_FPRINTF( stderr, "CUDA_CHECK_ERROR() with sync failed at %s:%i : %s\n", 
-                file, line, cudaGetErrorString( err ) );
-        exit( -1 );
-    }
-    #endif
+   #endif
 }
 __host__ __device__ inline bool is_valid(const Board *board) {
     return board->bitboards[0] & 1 != 0;
@@ -90,9 +42,6 @@ __host__ __device__ inline void set_valid(Board *board, bool valid) {
 inline bool boards_equal(const Board *b1, const Board *b2) {
     return memcmp(b1, b2, sizeof(Board)) == 0;
 }
-
-
-
 
 
 int compare_boards(const void *v1, const void *v2) {
@@ -152,10 +101,10 @@ __host__ __device__ inline void set_location(Board *board, int y_max, int x, int
 
     if (index < 63) { // board 1
         boardIndex = 0;
-        offset = pow(2.0, index + 1);
+        offset = (uint64_t) pow(2.0, index + 1);
     } else { // board 2
         boardIndex = 1;
-        offset = pow(2.0, index - 63);
+        offset = (uint64_t) pow(2.0, index - 63);
     } 
     board->bitboards[boardIndex] = board->bitboards[boardIndex] | offset;
 }
@@ -180,13 +129,6 @@ __host__ __device__ void print_board(Board *board, int x_max, int y_max) {
         printf("\n");
     }
 }
-
-struct is_valid_struct {
-    __host__ __device__ bool operator()(const Board b) {
-        return !is_valid(&b);
-    }
-};
-
 
 __device__ inline void copy_left(Board *board, int x_max, int y_max) {
     int middle = y_max / 2;
@@ -244,6 +186,7 @@ __device__ inline void copy_left(Board *board, int x_max, int y_max) {
 __global__ void next_boards(Board *input, Board *output, int branching, 
         int x_max, int y_max, bool vertical) {
     int index = threadIdx.x + blockIdx.x * blockDim.x;
+
     Board board = input[index];
 
     int count = 0; 
@@ -289,123 +232,70 @@ __global__ void next_boards(Board *input, Board *output, int branching,
     //__syncthreads();
 }
 
-int best = 0;
-
-void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, int depth) {
-    if (depth > best) {
-        best = depth;
-    }
-    LOG_PRINTF("\n");
+void work_down(Board* dev_input, int x_max, int y_max, int inCount, bool vertical, int depth) {
     if (inCount == 0) {
-        for (int i = 0 ; i < depth ; i++)
-            LOG_PRINTF(" ");
         LOG_PRINTF("no more moves at depth: %d\n", depth);
         return;
     }
     
-    LOG_PRINTF("starting for for depth: %d\n", depth);
-    Board *dev_input;
-    Board *dev_output;
-
-    int inputSize = inCount * sizeof(Board);
-
-    //TODO might be wrong branching count
     int branching = x_max * y_max;
     int outCount = inCount * branching;
     int outputSize = outCount * sizeof(Board);
+    Board *dev_output;
+    CUDA_SAFE_CALL(cudaMalloc((void **) &dev_output, outputSize));
 
-    
-    LOG_PRINTF("best            : %d\n", best);
+    printf("\n");
+    LOG_PRINTF("depth           : %d\n", depth);
     LOG_PRINTF("input count     : %d\n", inCount);
     LOG_PRINTF("branching count : %d\n", branching);
     LOG_PRINTF("output count    : %d\n", outCount);
-
-    Board *output = new Board[outCount];
-    
-    CUDA_SAFE_CALL(cudaMalloc((void **) &dev_input, inputSize));
-    CUDA_SAFE_CALL(cudaMalloc((void **) &dev_output, outputSize));
-    CUDA_SAFE_CALL(cudaMemcpy(dev_input, input, inputSize, cudaMemcpyHostToDevice));
     
     int blocks = inCount / THREADS_PER_BLOCK;
     blocks = (blocks == 0) ? 1 : blocks;
-    
-    next_boards<<<blocks, THREADS_PER_BLOCK>>>(dev_input, dev_output, branching, 
-            x_max, y_max, vertical);
+    next_boards<<<inCount, 1>>>(dev_input, dev_output, branching, x_max, y_max, vertical);
     CUDA_CHECK_ERROR();
+
+    LOG_PRINTF("custom\n"); 
     
-    CUDA_SAFE_CALL(cudaMemcpy(output, dev_output, outputSize, cudaMemcpyDeviceToHost));
-
-    LOG_PRINTF("gpu done...\n");
-
-    bool next = false;
-    for (int i = 0 ; i < outCount ; i++ ) {
-        Board board = (Board) output[i];
-        if (is_valid(&board) == true) {
-            next = true;
-            break;
-        }
-    }
-    
-//    CUDA_SAFE_CALL(cudaFree(dev_input));
-//    CUDA_SAFE_CALL(cudaFree(dev_output));
-    
-    if (next) {
-        
-        LOG_PRINTF("starting to sort...\n");
-        thrust::host_vector<Board> h_vec(outCount);
-        for (int i = 0 ; i < outCount ; i++) {
-            h_vec[i] = output[i];
-        }
-        delete[] output;
-        LOG_PRINTF("copied to host vector\n");
-        // copies the host vector to the device
-//       thrust::device_vector<Board> d_vec(h_vec.begin(), h_vec.end());
-
-        thrust::device_ptr<Board> dev_ptr = thrust::device_pointer_cast(dev_output);
-
-        LOG_PRINTF("device vector\n"); 
-        // removes invalid boards
-        thrust::device_vector<Board>::iterator new_end = thrust::remove_if(
-                d_vec.begin(), d_vec.end(), is_valid_struct());
-        // erases the invalid boards
-        d_vec.erase(new_end, d_vec.end());
-        LOG_PRINTF("removed invalid\n"); 
-        // sorts the boards so duplicates are next to each other 
-        thrust::sort(d_vec.begin(), d_vec.end());
-       
-        // removes the dupliates next to each other
-        new_end = thrust::unique(d_vec.begin(), d_vec.end()); 
-        d_vec.erase(new_end, d_vec.end());
-
-        // copies the device vector back to the host
-        std::vector<Board> stl_vector(d_vec.size());
-        thrust::copy(d_vec.begin(), d_vec.end(), stl_vector.begin());
+    size_t N = outCount;
+    CUDA_SAFE_CALL(cudaFree(dev_input));
+    thrust::device_ptr<Board> dev_ptr = thrust::device_pointer_cast(dev_output);
+    thrust::device_vector<Board> d_vec(dev_ptr, dev_ptr + N);
+    LOG_PRINTF("copy\n"); 
+    // removes
+    thrust::device_vector<Board>::iterator new_end = 
+        thrust::remove_if(d_vec.begin(), d_vec.end(), is_valid_struct());
      
-        h_vec.clear();
-        h_vec.shrink_to_fit();
-        d_vec.clear();
-        d_vec.shrink_to_fit();
+    // erases the invalid boards
+    d_vec.erase(new_end, d_vec.end());
+    LOG_PRINTF("erase\n");     
+    // sorts the boards so duplicates are next to each other 
+    
+    thrust::sort(d_vec.begin(), d_vec.end());
+       
+    LOG_PRINTF("sort\n");
 
-        LOG_PRINTF("actual size     : %d\n", stl_vector.size()); 
+    // removes the dupliates next to each other
+    new_end = thrust::unique(d_vec.begin(), d_vec.end()); 
+    d_vec.erase(new_end, d_vec.end());
 
-        int size = 1000000;
-        int outSize = stl_vector.size();
-        if (outSize > size) {
-            LOG_PRINTF("splitting...\n");
-            for (int i = 0 ; i < outSize ; i += size) {
-                if (outSize < i + size) {
-                    work_down(&stl_vector[i], x_max, y_max, outSize - i, !vertical, depth + 1);
-                } else {
-                    work_down(&stl_vector[i], x_max, y_max, size, !vertical, depth + 1);
-                }
-            }
+    LOG_PRINTF("unique\n");
 
-        } else {
-            work_down(&stl_vector[0], x_max, y_max, stl_vector.size(), !vertical, depth + 1);
+    size_t size = d_vec.size();
+    LOG_PRINTF("output size     : %d\n", size);
+    const size_t MAX_SIZE = 3000000;
+    
+    if (size > MAX_SIZE) {
+        LOG_PRINTF("splitting...\n");
+        for (int i = 0 ; i < size ; i += MAX_SIZE) {
+            if (size < i + MAX_SIZE) {
+                work_down(&dev_output[i], x_max, y_max, size - i, !vertical, depth + 1);
+            } else {
+                work_down(&dev_output[i], x_max, y_max, MAX_SIZE, !vertical, depth + 1);
+            } 
         }
-    } else { 
-        LOG_PRINTF("no more moves\n");
-        delete[] output;
+    } else {
+        return work_down(dev_output, x_max, y_max, size, !vertical, depth + 1);
     }
 }
 
@@ -421,12 +311,18 @@ int main(void) {
     LOG_PRINTF("Board size: %d\n", sizeof(Board));
 
     int inCount = 1;
+    size_t inputSize = inCount * sizeof(Board); 
     Board *inputBoards = new Board[inCount];
     memset(&inputBoards[0], 0, sizeof(Board));
     set_valid(&inputBoards[0], true);
+
+    Board* dev_input;
+    CUDA_SAFE_CALL(cudaMalloc((void **) &dev_input, inputSize));
+    CUDA_SAFE_CALL(cudaMemcpy(dev_input, inputBoards, inCount, cudaMemcpyHostToDevice));
+
     LOG_PRINTF("initial\n");
     print_board(&inputBoards[0], x, y);
-    work_down(inputBoards, x, y, 1, true, 0);
-    delete[] inputBoards; 
+    work_down(dev_input, x, y, 1, true, 0);
+    delete[] inputBoards;
     return 0;
 }

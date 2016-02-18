@@ -11,6 +11,7 @@
 #include <thrust/remove.h>
 #include <thrust/unique.h>
 
+
 #define THREADS_PER_BLOCK 1024
 
 #define CUDA_ERROR_CHECK
@@ -341,13 +342,12 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
         Board board = (Board) output[i];
         if (is_valid(&board) == true) {
             next = true;
-            print_board(&board, x_max, y_max);
             break;
         }
     }
     
-    CUDA_SAFE_CALL(cudaFree(dev_input));
-    CUDA_SAFE_CALL(cudaFree(dev_output));
+//    CUDA_SAFE_CALL(cudaFree(dev_input));
+//    CUDA_SAFE_CALL(cudaFree(dev_output));
     
     if (next) {
         
@@ -356,19 +356,23 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
         for (int i = 0 ; i < outCount ; i++) {
             h_vec[i] = output[i];
         }
-
+        delete[] output;
+        LOG_PRINTF("copied to host vector\n");
         // copies the host vector to the device
-        thrust::device_vector<Board> d_vec(h_vec.begin(), h_vec.end());
-        
+//       thrust::device_vector<Board> d_vec(h_vec.begin(), h_vec.end());
+
+        thrust::device_ptr<Board> dev_ptr = thrust::device_pointer_cast(dev_output);
+
+        LOG_PRINTF("device vector\n"); 
         // removes invalid boards
         thrust::device_vector<Board>::iterator new_end = thrust::remove_if(
                 d_vec.begin(), d_vec.end(), is_valid_struct());
         // erases the invalid boards
         d_vec.erase(new_end, d_vec.end());
-        
+        LOG_PRINTF("removed invalid\n"); 
         // sorts the boards so duplicates are next to each other 
         thrust::sort(d_vec.begin(), d_vec.end());
-
+       
         // removes the dupliates next to each other
         new_end = thrust::unique(d_vec.begin(), d_vec.end()); 
         d_vec.erase(new_end, d_vec.end());
@@ -376,55 +380,29 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
         // copies the device vector back to the host
         std::vector<Board> stl_vector(d_vec.size());
         thrust::copy(d_vec.begin(), d_vec.end(), stl_vector.begin());
-        
-        for (int i = 0 ; i < stl_vector.size() ; i++ ) {
-            print_board(&stl_vector[i], x_max, y_max);
-        }
+     
+        h_vec.clear();
+        h_vec.shrink_to_fit();
+        d_vec.clear();
+        d_vec.shrink_to_fit();
 
-        exit(1);
+        LOG_PRINTF("actual size     : %d\n", stl_vector.size()); 
 
-        qsort(output, outCount, sizeof(Board), compare_boards);
-        CUDA_CHECK_ERROR();
-
-        LOG_PRINTF("sorting done...\n");
-        Board *noDuplicates = new Board[outCount];
-        int dupCount = 1;
-
-        Board last = output[0];
-        memcpy(&noDuplicates[0], &output[0], sizeof(Board));
-        
-        for (int i = 1 ; i < outCount ; i++) {
-            if (is_valid(&output[i])) {
-                if (!boards_equal(&last, &output[i])) {
-                    memcpy(&noDuplicates[dupCount++], &output[i], sizeof(Board));
-                    last = output[i];
-                }
-            } else {
-                break;
-            }
-        }
-        
-        LOG_PRINTF("duplicate count : %d\n", dupCount);
-        delete[] output;
-
-        int size = 3000000;
-        if (dupCount > size) {
-            LOG_PRINTF("\n");
-            
+        int size = 1000000;
+        int outSize = stl_vector.size();
+        if (outSize > size) {
             LOG_PRINTF("splitting...\n");
-
-            work_down(noDuplicates, x_max, y_max, size, !vertical, depth + 1);
-            /*for (int i = 0 ; i < dupCount ; i += size) {
-                if (dupCount < i + size) {
-                    work_down(noDuplicates + i, x_max, y_max, dupCount - i, !vertical, depth + 1);
+            for (int i = 0 ; i < outSize ; i += size) {
+                if (outSize < i + size) {
+                    work_down(&stl_vector[i], x_max, y_max, outSize - i, !vertical, depth + 1);
                 } else {
-                    work_down(noDuplicates + i, x_max, y_max, size, !vertical, depth + 1);
+                    work_down(&stl_vector[i], x_max, y_max, size, !vertical, depth + 1);
                 }
-            }*/
+            }
+
         } else {
-            work_down(noDuplicates, x_max, y_max, dupCount, !vertical, depth + 1);
+            work_down(&stl_vector[0], x_max, y_max, stl_vector.size(), !vertical, depth + 1);
         }
-        delete[] noDuplicates;
     } else { 
         LOG_PRINTF("no more moves\n");
         delete[] output;
@@ -434,8 +412,8 @@ void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, i
 
 // main routine that executes on the host
 int main(void) {
-    unsigned char x = 5;
-    unsigned char y = 5;
+    unsigned char x = 7;
+    unsigned char y = 7;
 
     std::set_new_handler(outOfMemHandler);
 

@@ -55,48 +55,53 @@ __device__ double board_distance(Board *board) {
 // threadIdx.x = thread index within the block
 
 __global__ void next_boards(Board *input, Board *output, int branching, 
-        int x_max, int y_max, bool vertical) {
+        int x_max, int y_max, bool vertical, int max_index) {
     int index = threadIdx.x + blockIdx.x * blockDim.x;
-
-    Board board = input[index];
-
     int count = 0; 
-    if (is_valid(&board)) { 
-        if (vertical) {
-            for (int x = 0 ; x < x_max - 1; x++) {
-                for (int y = 0 ; y < y_max ; y++) {
-                    if (!get_location(&board, y_max, x, y) && 
-                            !get_location(&board, y_max, x + 1, y)) {
-                        memcpy(&output[index * branching + count], &board, sizeof(Board));
-                        set_location(&output[index * branching + count], y_max, x, y);
-                        set_location(&output[index * branching + count], y_max, x + 1, y); 
-                        count++;
+
+    // makes sure that the threads only read the given input. This can happen
+    // when the amount of threads per block do not line up with the total 
+    // input count.
+    if (index < max_index) {
+        Board board = input[index];
+        // only process valid board configurations
+        if (is_valid(&board)) { 
+            if (vertical) {
+                for (int x = 0 ; x < x_max - 1; x++) {
+                    for (int y = 0 ; y < y_max ; y++) {
+                        if (!get_location(&board, y_max, x, y) && 
+                                !get_location(&board, y_max, x + 1, y)) {
+                            memcpy(&output[index * branching + count], &board, sizeof(Board));
+                            set_location(&output[index * branching + count], y_max, x, y);
+                            set_location(&output[index * branching + count], y_max, x + 1, y); 
+                            count++;
+                        }
                     }
                 }
-            }
-        } else {
-            for (int x = 0 ; x < x_max ; x++) {
-                for (int y = 0 ; y < y_max - 1 ; y++) {
-                    if (!get_location(&board, y_max, x, y) && 
-                            !get_location(&board, y_max, x, y + 1)) {
-                        memcpy(&output[index * branching + count], &board, sizeof(Board));
-                        set_location(&output[index * branching + count], y_max, x, y);
-                        set_location(&output[index * branching + count], y_max, x, y + 1);
-                        count++;
+            } else {
+                for (int x = 0 ; x < x_max ; x++) {
+                    for (int y = 0 ; y < y_max - 1 ; y++) {
+                        if (!get_location(&board, y_max, x, y) && 
+                                !get_location(&board, y_max, x, y + 1)) {
+                            memcpy(&output[index * branching + count], &board, sizeof(Board));
+                            set_location(&output[index * branching + count], y_max, x, y);
+                            set_location(&output[index * branching + count], y_max, x, y + 1);
+                            count++;
+                        }
                     }
                 }
             }
         }
-    }
 
-    for (int i = 0 ; i < count ; i++) {
-        Board *board = &output[index * branching + i];
-        set_valid(board, true);
-        board->distance = board_distance(board);
-        //copy_left(board, x_max, y_max);
-    }
-    for (int i = count ; i < branching ; i++) {
-        set_valid(&output[index * branching + i], false);
+        for (int i = 0 ; i < count ; i++) {
+            Board *board = &output[index * branching + i];
+            set_valid(board, true);
+            // TODO better way to store distance
+            board->distance = board_distance(board);
+        }
+        for (int i = count ; i < branching ; i++) {
+            set_valid(&output[index * branching + i], false);
+        }
     }
 }
 
@@ -198,65 +203,79 @@ __device__ bool operator <(const Board& b1, const Board& b2) {
 }
 
 
-void work_down(Board* dev_input, int x_max, int y_max, int inCount, bool vertical, int depth) {
+int best = 0;
+
+void work_down(Board* input, int x_max, int y_max, int inCount, bool vertical, int depth) {
+    best = max(best, depth);
     if (inCount == 0) {
         LOG_PRINTF("no more moves at depth: %d\n", depth);
         return;
     }
+
+    Board *dev_input;
+    size_t inputSize = inCount * sizeof(Board);
+    CUDA_SAFE_CALL(cudaMalloc((void**) &dev_input, inputSize));
+    CUDA_SAFE_CALL(cudaMemcpy(dev_input, input, inputSize, cudaMemcpyHostToDevice));
     
     int branching = x_max * y_max;
     int outCount = inCount * branching;
-    int outputSize = outCount * sizeof(Board);
+    size_t outputSize = outCount * sizeof(Board);
     Board *dev_output;
-    CUDA_SAFE_CALL(cudaMalloc((void **) &dev_output, outputSize));
-
     printf("\n");
     LOG_PRINTF("depth           : %d\n", depth);
+    LOG_PRINTF("max             : %d\n", best);
     LOG_PRINTF("input count     : %d\n", inCount);
     LOG_PRINTF("branching count : %d\n", branching);
     LOG_PRINTF("output count    : %d\n", outCount);
-    
-    int blocks = inCount / THREADS_PER_BLOCK;
-    blocks = (blocks == 0) ? 1 : blocks;
-    next_boards<<<inCount, 1>>>(dev_input, dev_output, branching, x_max, y_max, vertical);
-    CUDA_CHECK_ERROR();
+    LOG_PRINTF("mallocing size  : %zu\n", outputSize);
+    CUDA_SAFE_CALL(cudaMalloc((void **) &dev_output, outputSize));
 
-    size_t N = outCount;
+    int blocks = (int) ceil((inCount * 1.0) / THREADS_PER_BLOCK);
+    next_boards<<<blocks, THREADS_PER_BLOCK>>>(dev_input, dev_output, branching, 
+            x_max, y_max, vertical, inCount);
+    CUDA_CHECK_ERROR();
     CUDA_SAFE_CALL(cudaFree(dev_input));
+    
+    size_t N = outCount;
     thrust::device_ptr<Board> dev_ptr = thrust::device_pointer_cast(dev_output);
     thrust::device_vector<Board> d_vec(dev_ptr, dev_ptr + N);
     
     // removes
     thrust::device_vector<Board>::iterator new_end = 
         thrust::remove_if(d_vec.begin(), d_vec.end(), is_valid_struct());
-    LOG_PRINTF("removed invalid\n");   
+    
     // erases the invalid boards
     d_vec.erase(new_end, d_vec.end());
     
     // sorts the boards so duplicates are next to each other 
     thrust::sort(d_vec.begin(), d_vec.end());
-    LOG_PRINTF("sorted\n");
+    
     // removes the dupliates next to each other
     new_end = thrust::unique(d_vec.begin(), d_vec.end()); 
     d_vec.erase(new_end, d_vec.end());
 
-    LOG_PRINTF("removed duplicates\n");
-
     size_t size = d_vec.size();
     LOG_PRINTF("output size     : %d\n", size);
-    const size_t MAX_SIZE = 3000000;
-     
+    
+    // determined by the max amount of device memory
+    const size_t MAX_SIZE = 120000;
+
+    Board *host_output = new Board[size];
+    CUDA_SAFE_CALL(cudaMemcpy(host_output, &dev_output[0], size * sizeof(Board),
+                cudaMemcpyDeviceToHost));
+    CUDA_SAFE_CALL(cudaFree(dev_output));
+
     if (size > MAX_SIZE) {
         LOG_PRINTF("splitting...\n");
         for (int i = 0 ; i < size ; i += MAX_SIZE) {
             if (size < i + MAX_SIZE) {
-                work_down(&dev_output[i], x_max, y_max, size - i, !vertical, depth + 1);
+                work_down(&host_output[i], x_max, y_max, size - i, !vertical, depth + 1);
             } else {
-                work_down(&dev_output[i], x_max, y_max, MAX_SIZE, !vertical, depth + 1);
+                work_down(&host_output[i], x_max, y_max, MAX_SIZE, !vertical, depth + 1);
             } 
         }
     } else {
-        return work_down(dev_output, x_max, y_max, size, !vertical, depth + 1);
+        return work_down(host_output, x_max, y_max, size, !vertical, depth + 1);
     }
 }
 
@@ -272,18 +291,13 @@ int main(void) {
     LOG_PRINTF("Board size: %d\n", sizeof(Board));
 
     int inCount = 1;
-    size_t inputSize = inCount * sizeof(Board); 
     Board *inputBoards = new Board[inCount];
     memset(&inputBoards[0], 0, sizeof(Board));
     set_valid(&inputBoards[0], true);
 
-    Board* dev_input;
-    CUDA_SAFE_CALL(cudaMalloc((void **) &dev_input, inputSize));
-    CUDA_SAFE_CALL(cudaMemcpy(dev_input, inputBoards, inputSize, cudaMemcpyHostToDevice));
-
     LOG_PRINTF("initial\n");
     print_board(&inputBoards[0], x, y);
-    work_down(dev_input, x, y, 1, true, 0);
+    work_down(inputBoards, x, y, 1, true, 0);
     delete[] inputBoards;
     return 0;
 }

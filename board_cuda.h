@@ -10,7 +10,6 @@
 
 typedef struct {
     uint64_t bitboards[2];
-    double distance;
 } Board;
 
 __host__ __device__ inline bool is_valid(const Board *board) {

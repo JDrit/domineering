@@ -4,8 +4,6 @@
 #define Y_MAX 8
 #define MAX_SIZE 50000
 
-using namespace std;
-
 void outOfMemHandler() {
     LOG_FPRINTF(stderr, "Unable to satisfy request for memory\n");
     std::abort();

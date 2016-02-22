@@ -39,7 +39,7 @@ __device__ double board_distance(Board *board) {
     for (int x = 0 ; x < X_MAX ; x++) {
         for (int y = 0 ; y < Y_MAX ; y++) {
             if (get_location(board, Y_MAX, x, y) == true) {
-                distance += sqrt(pow(x - middle_x, 2.0) + pow(y - middle_y, 2.0));
+                distance += sqrt(pow((1.0 * x - middle_x, 2.0) + pow(1.0 * y - middle_y, 2.0));
             }
         }
     }

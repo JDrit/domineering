@@ -1,8 +1,12 @@
-#include "cuda.h"
+#include "domineering.h"
 
-#define X_MAX 8
-#define Y_MAX 8
+#define X_MAX 3
+#define Y_MAX 3
 #define MAX_SIZE 50000
+
+#define NO_WINNER -1
+#define NEXT_WIN 1
+#define PREV_WIN 2
 
 void outOfMemHandler() {
     LOG_FPRINTF(stderr, "Unable to satisfy request for memory\n");
@@ -50,8 +54,8 @@ __device__ double board_distance(Board *board) {
 // blockDim.x  = dimension of the block
 // threadIdx.x = thread index within the block
 
-__global__ void next_boards(Board *input, Board *output, double *distances, int branching, 
-        bool vertical, int max_index) {
+__global__ void next_boards(Board *input, Board *output, double *distances, 
+        int branching, bool vertical, int max_index) {
     int index = threadIdx.x + blockIdx.x * blockDim.x;
     int count = 0; 
 
@@ -89,6 +93,16 @@ __global__ void next_boards(Board *input, Board *output, double *distances, int 
             }
         }
 
+        if (count == 0) {
+            if (vertical) {
+                board.winner = PREV_WIN;
+            }  else {
+                board.winner = NEXT_WIN;
+            }
+        } else {
+            board.winner = NO_WINNER;
+        }
+        
         for (int i = 0 ; i < count ; i++) {
             Board *board = &output[index * branching + i];
             set_valid(board, true);
@@ -188,11 +202,11 @@ __device__ bool operator ==(const Board& b1, const Board& b2) {
 
 int best = 0;
 
-void work_down(Board* input, int inCount, bool vertical, int depth) {
+char* work_down(Board* input, int inCount, bool vertical, int depth) {
     best = max(best, depth);
     if (inCount == 0) {
         LOG_PRINTF("no more moves at depth: %d\n", depth);
-        return;
+        return NULL;
     }
 
     int branching = X_MAX * Y_MAX;
@@ -215,7 +229,8 @@ void work_down(Board* input, int inCount, bool vertical, int depth) {
     LOG_PRINTF("mallocing size  : %zu\n", totalSize);
     
     CUDA_SAFE_CALL(cudaMalloc((void**) &dev_input, inCount * sizeof(Board)));
-    CUDA_SAFE_CALL(cudaMemcpy(dev_input, input, inCount * sizeof(Board), cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL(cudaMemcpy(dev_input, input, inCount * sizeof(Board),
+                cudaMemcpyHostToDevice));
     CUDA_SAFE_CALL(cudaMalloc((void **) &dev_boards, outCount * sizeof(Board)));
     CUDA_SAFE_CALL(cudaMalloc((void **) &dev_distances, outCount * sizeof(double)));
 
@@ -223,8 +238,12 @@ void work_down(Board* input, int inCount, bool vertical, int depth) {
     next_boards<<<blocks, THREADS_PER_BLOCK>>>(dev_input, dev_boards, dev_distances, 
             branching, vertical, inCount);
     CUDA_CHECK_ERROR();
-    CUDA_SAFE_CALL(cudaFree(dev_input));
-    
+
+    //CUDA_SAFE_CALL(cudaFree(dev_input));
+        for (int i = 0 ; i < inCount ; i++) {
+            printf("test: %d\n", input[i].winner);
+    }
+
     size_t N = outCount;
     thrust::device_ptr<Board> d_board_ptr = thrust::device_pointer_cast(dev_boards);
     thrust::device_vector<Board> d_board_vec(d_board_ptr, d_board_ptr + N);
@@ -260,7 +279,9 @@ void work_down(Board* input, int inCount, bool vertical, int depth) {
                 cudaMemcpyDeviceToHost));
     CUDA_SAFE_CALL(cudaFree(dev_boards));
 
-    if (size > MAX_SIZE) {
+    // TODO
+    // implemente alpha-beta pruning for splits to reduce extra work
+    if (false && size > MAX_SIZE) {
         LOG_PRINTF("splitting...\n");
         for (int i = 0 ; i < size ; i += MAX_SIZE) {
             if (size < i + MAX_SIZE) {
@@ -270,7 +291,18 @@ void work_down(Board* input, int inCount, bool vertical, int depth) {
             } 
         }
     } else {
-        work_down(host_output, size, !vertical, depth + 1);
+        char *result = work_down(host_output, size, !vertical, depth + 1);
+        char *winners = new char[inCount];
+        for (int i = 0 ; i < inCount ; i++) {
+            winners[i] = PREV_WIN;
+            for (int j = 0 ; j < branching ; j++) {
+                if (result[i * branching + j] == PREV_WIN) {
+                    winners[i] = NEXT_WIN;
+                    break;
+                }
+            }
+        }
+        return winners;   
     }
     delete[] host_output;
 }

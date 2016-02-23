@@ -11,7 +11,7 @@
 #include <thrust/remove.h>
 #include <thrust/unique.h>
 
-#include "board_cuda.h"
+#include "board.h"
 
 #define THREADS_PER_BLOCK 1024
 

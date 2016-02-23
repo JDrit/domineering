@@ -74,6 +74,7 @@ __global__ void next_boards(Board *input, Board *output, double *distances,
                             memcpy(&output[index * branching + count], &board, sizeof(Board));
                             set_location(&output[index * branching + count], Y_MAX, x, y);
                             set_location(&output[index * branching + count], Y_MAX, x + 1, y); 
+                            set_valid(&output[index * branching + count], true);
                             count++;
                         }
                     }
@@ -86,30 +87,17 @@ __global__ void next_boards(Board *input, Board *output, double *distances,
                             memcpy(&output[index * branching + count], &board, sizeof(Board));
                             set_location(&output[index * branching + count], Y_MAX, x, y);
                             set_location(&output[index * branching + count], Y_MAX, x, y + 1);
+                            set_valid(&output[index * branching + count], true);
                             count++;
                         }
                     }
                 }
             }
         }
-
-        if (count == 0) {
-            if (vertical) {
-                board.winner = PREV_WIN;
-            }  else {
-                board.winner = NEXT_WIN;
-            }
-        } else {
-            board.winner = NO_WINNER;
-        }
-        
-        for (int i = 0 ; i < count ; i++) {
-            Board *board = &output[index * branching + i];
-            set_valid(board, true);
-            distances[index * branching + i] = board_distance(board);
-        }
         for (int i = count ; i < branching ; i++) {
-            set_valid(&output[index * branching + i], false);
+            Board *board = &output[index * branching + i];
+            board->bitboards[0] = 0;
+            board->bitboards[1] = 0;
             distances[index * branching + i] = -1;
         }
     }
@@ -200,7 +188,6 @@ __device__ bool operator ==(const Board& b1, const Board& b2) {
         horizontal_equal(&board1, &board2);
 }
 
-int best = 0;
 
 char* work_down(Board* input, int inCount, bool vertical, int depth) {
     best = max(best, depth);
@@ -239,49 +226,31 @@ char* work_down(Board* input, int inCount, bool vertical, int depth) {
             branching, vertical, inCount);
     CUDA_CHECK_ERROR();
 
-    //CUDA_SAFE_CALL(cudaFree(dev_input));
-        for (int i = 0 ; i < inCount ; i++) {
-            printf("test: %d\n", input[i].winner);
-    }
+    CUDA_SAFE_CALL(cudaFree(dev_input));
+    CUDA_SAFE_CALL(cudaFree(dev_distances));
 
     size_t N = outCount;
     thrust::device_ptr<Board> d_board_ptr = thrust::device_pointer_cast(dev_boards);
     thrust::device_vector<Board> d_board_vec(d_board_ptr, d_board_ptr + N);
 
-    thrust::device_ptr<double> d_dist_ptr = thrust::device_pointer_cast(dev_distances);
-    thrust::device_vector<double> d_dist_vec(d_dist_ptr, d_dist_ptr + N);
+    // copy of only valid next moves
+    thrust::device_vector<Board> d_board_copy(d_board_vec.size());
+    thrust::device_vector<Board>::iterator end = thrust::copy_if(d_board_vec.begin(), 
+            d_board_vec.end(), d_board_copy.begin(), is_valid_struct());
+    d_board_copy.erase(end, d_board_copy.end());
+    CUDA_SAFE_CALL(cudaFree(dev_boards));
 
-    // removes
-    thrust::device_vector<Board>::iterator board_end = 
-        thrust::remove_if(d_board_vec.begin(), d_board_vec.end(), is_valid_struct());
-    thrust::device_vector<double>::iterator dist_end = 
-        thrust::remove(d_dist_vec.begin(), d_dist_vec.end(), -1);
-    
-    // erases the invalid boards
-    d_board_vec.erase(board_end, d_board_vec.end());
-    d_dist_vec.erase(dist_end, d_dist_vec.end());
-    
-    // sorts the boards so dupliicates are next to each other 
-    // TODO probs not working 
-    thrust::stable_sort_by_key(d_dist_vec.begin(), d_dist_vec.end(), d_board_vec.begin());
-
-    CUDA_SAFE_CALL(cudaFree(dev_distances));
-
-    // removes the dupliates next to each other
-    board_end = thrust::unique(d_board_vec.begin(), d_board_vec.end()); 
-    d_board_vec.erase(board_end, d_board_vec.end());
-
-    size_t size = d_board_vec.size();
+    size_t size = d_board_copy.size();
     LOG_PRINTF("output size     : %d\n", size);
     
     Board *host_output = new Board[size];
-    CUDA_SAFE_CALL(cudaMemcpy(host_output, &dev_boards[0], size * sizeof(Board),
-                cudaMemcpyDeviceToHost));
-    CUDA_SAFE_CALL(cudaFree(dev_boards));
+    Board* dv_ptr = thrust::raw_pointer_cast(d_board_copy.data());
 
+    CUDA_SAFE_CALL(cudaMemcpy(host_output, dv_ptr, size * sizeof(Board),
+                cudaMemcpyDeviceToHost));
     // TODO
     // implemente alpha-beta pruning for splits to reduce extra work
-    if (false && size > MAX_SIZE) {
+    /*if (false && size > MAX_SIZE) {
         LOG_PRINTF("splitting...\n");
         for (int i = 0 ; i < size ; i += MAX_SIZE) {
             if (size < i + MAX_SIZE) {
@@ -304,7 +273,8 @@ char* work_down(Board* input, int inCount, bool vertical, int depth) {
         }
         return winners;   
     }
-    delete[] host_output;
+    delete[] host_output; */
+    work_down(host_output, size, !vertical, depth + 1);
 }
 
 
@@ -321,8 +291,6 @@ int main(void) {
     memset(&inputBoards[0], 0, sizeof(Board));
     set_valid(&inputBoards[0], true);
 
-    LOG_PRINTF("initial\n");
-    print_board(&inputBoards[0], X_MAX, Y_MAX);
     work_down(inputBoards, 1, true, 0);
     delete[] inputBoards;
     return 0;

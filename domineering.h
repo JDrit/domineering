@@ -8,8 +8,8 @@
 #include <thrust/sort.h>
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
-#include <thrust/remove.h>
-#include <thrust/unique.h>
+#include <thrust/device_free.h>
+#include <thrust/copy.h>
 
 #include "board.h"
 
@@ -50,7 +50,7 @@ inline void __CUDA_CHECK_ERROR(const char *file, const int line);
 
 struct is_valid_struct {
     __host__ __device__ bool operator()(const Board b) {
-        return !is_valid(&b);
+        return is_valid(&b);
     }
 };
 

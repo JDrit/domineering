@@ -10,7 +10,7 @@
 
 typedef struct {
     uint64_t bitboards[2];
-    char winner;
+    int parent;
 } Board;
 
 __host__ __device__ inline bool is_valid(const Board *board) {
@@ -18,7 +18,7 @@ __host__ __device__ inline bool is_valid(const Board *board) {
 }
 
 __host__ __device__ void set_valid(Board *board, bool valid) {
-    if (valid) {
+    if (valid == true) {
         board->bitboards[0] = board->bitboards[0] | 1;    
     } else {
         board->bitboards[0] = board->bitboards[0] & 0;

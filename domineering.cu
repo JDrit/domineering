@@ -193,37 +193,37 @@ __device__ bool operator ==(const Board& b1, const Board& b2) {
 
 int best = 0;
 
-char* work_down(Board* input, int inCount, bool vertical, int depth) {
+char* work_down(Board* input, size_t inputSize, bool vertical, int depth) {
     best = max(best, depth);
-    if (inCount == 0) {
-        LOG_PRINTF("no more moves at depth: %d\n", depth);
+    if (inputSize == 0) {
+        LOG_PRINTF("no more moves at depth: %i\n", depth);
         return NULL;
     }
 
     int branching = X_MAX * Y_MAX;
-    int outCount = inCount * branching;
+    int outCount = inputSize * branching;
     
     Board *dev_boards;
     Board *dev_input;
     
-    size_t totalSize = inCount * sizeof(Board) + outCount * sizeof(Board);
+    size_t totalSize = inputSize * sizeof(Board) + outCount * sizeof(Board);
 
     printf("\n");
     LOG_PRINTF("depth           : %d\n", depth);
     LOG_PRINTF("max             : %d\n", best);
-    LOG_PRINTF("input count     : %d\n", inCount);
+    LOG_PRINTF("input count     : %zu\n", inputSize);
     LOG_PRINTF("branching count : %d\n", branching);
     LOG_PRINTF("output count    : %d\n", outCount);
     LOG_PRINTF("mallocing size  : %zu\n", totalSize);
     
-    CUDA_SAFE_CALL(cudaMalloc((void**) &dev_input, inCount * sizeof(Board)));
-    CUDA_SAFE_CALL(cudaMemcpy(dev_input, input, inCount * sizeof(Board),
+    CUDA_SAFE_CALL(cudaMalloc((void**) &dev_input, inputSize * sizeof(Board)));
+    CUDA_SAFE_CALL(cudaMemcpy(dev_input, input, inputSize * sizeof(Board),
                 cudaMemcpyHostToDevice));
     CUDA_SAFE_CALL(cudaMalloc((void **) &dev_boards, outCount * sizeof(Board)));
 
-    int blocks = (int) ceil((inCount * 1.0) / THREADS_PER_BLOCK);
+    int blocks = (int) ceil((inputSize * 1.0) / THREADS_PER_BLOCK);
     next_boards<<<blocks, THREADS_PER_BLOCK>>>(dev_input, dev_boards, 
-            branching, vertical, inCount);
+            branching, vertical, inputSize);
     CUDA_CHECK_ERROR();
     CUDA_SAFE_CALL(cudaFree(dev_input));
     
@@ -237,7 +237,7 @@ char* work_down(Board* input, int inCount, bool vertical, int depth) {
                 is_valid_struct()), d_board_vec.end());
 
     size_t size = d_board_vec.size();
-    LOG_PRINTF("output size     : %d\n", size);
+    LOG_PRINTF("output size     : %zu\n", size);
     Board *host_output = new Board[size];
     Board* dv_ptr = thrust::raw_pointer_cast(d_board_vec.data());
     CUDA_SAFE_CALL(cudaMemcpy(host_output, dv_ptr, size * sizeof(Board), cudaMemcpyDeviceToHost));
@@ -246,28 +246,28 @@ char* work_down(Board* input, int inCount, bool vertical, int depth) {
     d_board_vec.shrink_to_fit();
 
     if (size == 0) {
-        char *winners = new char[inCount];
-        for (int i = 0 ; i < inCount ; i++) {
+        char *winners = new char[inputSize];
+        for (size_t i = 0 ; i < inputSize ; i++) {
             winners[i] = 'P';
         }
         delete[] host_output;
         return winners;
     } else if (size > MAX_SIZE) {
         LOG_PRINTF("splitting...\n");
-        char *winners = new char[inCount];
+        char *winners = new char[inputSize];
         vector<char> nextWins;
 
-        for (int i = 0 ; i < size ; i += MAX_SIZE) {
+        for (size_t i = 0 ; i < size ; i += MAX_SIZE) {
             size_t nextSize = (size < i + MAX_SIZE) ? size - i : MAX_SIZE;
             char *nextWinners = work_down(&host_output[i], nextSize, !vertical, depth + 1); 
-            for (int j = 0 ; j < nextSize ; j++) {
+            for (size_t j = 0 ; j < nextSize ; j++) {
                 nextWins.push_back(nextWinners[j]); 
             }
             delete[] nextWinners;
         }
         
-        int offset = 0;
-        for (int i = 0 ; i < inCount ; i++) {
+        size_t offset = 0;
+        for (size_t i = 0 ; i < inputSize ; i++) {
             char winner = 'P';
             while (offset < size && host_output[offset].parent == i) {
                 if (nextWins[offset] == 'P') {
@@ -281,9 +281,9 @@ char* work_down(Board* input, int inCount, bool vertical, int depth) {
         return winners;
     } else {
         char *nextWinners = work_down(host_output, size, !vertical, depth + 1);
-        char *winners = new char[inCount];
-        int offset = 0;
-        for (int i = 0 ; i < inCount ; i++) {
+        char *winners = new char[inputSize];
+        size_t offset = 0;
+        for (size_t i = 0 ; i < inputSize ; i++) {
             char winner = 'P';
             while (offset < size && host_output[offset].parent == i) {
                 if (nextWinners[offset] == 'P') {
@@ -310,10 +310,10 @@ int main(void) {
     std::set_new_handler(outOfMemHandler);
 
     LOG_PRINTF("remember to kill the X session\n");
-    LOG_PRINTF("Board size: %d\n", sizeof(Board));
+    LOG_PRINTF("Board size: %zu\n", sizeof(Board));
 
-    int inCount = 1;
-    Board *inputBoards = new Board[inCount];
+    size_t inputSize = 1;
+    Board *inputBoards = new Board[inputSize];
     memset(&inputBoards[0], 0, sizeof(Board));
     set_valid(&inputBoards[0], true);
 

@@ -23,7 +23,7 @@
     struct timeval time_now; \
     gettimeofday(&time_now, NULL); \
     tm* time_str_tm = gmtime(&time_now.tv_sec); \
-    printf("%02i:%02i:%02i:%06i : ", time_str_tm->tm_hour, time_str_tm->tm_min, \
+    printf("%02i:%02i:%02i:%06ld : ", time_str_tm->tm_hour, time_str_tm->tm_min, \
             time_str_tm->tm_sec, time_now.tv_usec); \
     printf(__VA_ARGS__); \
 } while (0) 

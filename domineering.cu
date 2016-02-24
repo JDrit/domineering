@@ -1,7 +1,7 @@
 #include "domineering.h"
 
-#define X_MAX 3
-#define Y_MAX 3
+#define X_MAX 11
+#define Y_MAX 4
 #define MAX_SIZE 50000
 
 #define NO_WINNER -1
@@ -54,8 +54,8 @@ __device__ double board_distance(Board *board) {
 // blockDim.x  = dimension of the block
 // threadIdx.x = thread index within the block
 
-__global__ void next_boards(Board *input, Board *output, double *distances, 
-        int branching, bool vertical, int max_index) {
+__global__ void next_boards(Board *input, Board *output, int branching, bool vertical, 
+        int max_index) {
     int index = threadIdx.x + blockIdx.x * blockDim.x;
     int count = 0; 
 
@@ -75,6 +75,7 @@ __global__ void next_boards(Board *input, Board *output, double *distances,
                             set_location(&output[index * branching + count], Y_MAX, x, y);
                             set_location(&output[index * branching + count], Y_MAX, x + 1, y); 
                             set_valid(&output[index * branching + count], true);
+                            output[index * branching + count].parent = index;
                             count++;
                         }
                     }
@@ -88,6 +89,7 @@ __global__ void next_boards(Board *input, Board *output, double *distances,
                             set_location(&output[index * branching + count], Y_MAX, x, y);
                             set_location(&output[index * branching + count], Y_MAX, x, y + 1);
                             set_valid(&output[index * branching + count], true);
+                            output[index * branching + count].parent = index;
                             count++;
                         }
                     }
@@ -98,7 +100,6 @@ __global__ void next_boards(Board *input, Board *output, double *distances,
             Board *board = &output[index * branching + i];
             board->bitboards[0] = 0;
             board->bitboards[1] = 0;
-            distances[index * branching + i] = -1;
         }
     }
 }
@@ -188,6 +189,7 @@ __device__ bool operator ==(const Board& b1, const Board& b2) {
         horizontal_equal(&board1, &board2);
 }
 
+int best = 0;
 
 char* work_down(Board* input, int inCount, bool vertical, int depth) {
     best = max(best, depth);
@@ -201,12 +203,9 @@ char* work_down(Board* input, int inCount, bool vertical, int depth) {
     
     Board *dev_boards;
     Board *dev_input;
-    double *dev_distances;
     
-    size_t totalSize = inCount * sizeof(Board) + 
-        outCount * sizeof(Board) + 
-        outCount * sizeof(double); 
-    
+    size_t totalSize = inCount * sizeof(Board) + outCount * sizeof(Board);
+
     printf("\n");
     LOG_PRINTF("depth           : %d\n", depth);
     LOG_PRINTF("max             : %d\n", best);
@@ -219,62 +218,60 @@ char* work_down(Board* input, int inCount, bool vertical, int depth) {
     CUDA_SAFE_CALL(cudaMemcpy(dev_input, input, inCount * sizeof(Board),
                 cudaMemcpyHostToDevice));
     CUDA_SAFE_CALL(cudaMalloc((void **) &dev_boards, outCount * sizeof(Board)));
-    CUDA_SAFE_CALL(cudaMalloc((void **) &dev_distances, outCount * sizeof(double)));
 
     int blocks = (int) ceil((inCount * 1.0) / THREADS_PER_BLOCK);
-    next_boards<<<blocks, THREADS_PER_BLOCK>>>(dev_input, dev_boards, dev_distances, 
+    next_boards<<<blocks, THREADS_PER_BLOCK>>>(dev_input, dev_boards, 
             branching, vertical, inCount);
     CUDA_CHECK_ERROR();
-
     CUDA_SAFE_CALL(cudaFree(dev_input));
-    CUDA_SAFE_CALL(cudaFree(dev_distances));
-
+    
     size_t N = outCount;
     thrust::device_ptr<Board> d_board_ptr = thrust::device_pointer_cast(dev_boards);
     thrust::device_vector<Board> d_board_vec(d_board_ptr, d_board_ptr + N);
 
-    // copy of only valid next moves
-    thrust::device_vector<Board> d_board_copy(d_board_vec.size());
-    thrust::device_vector<Board>::iterator end = thrust::copy_if(d_board_vec.begin(), 
-            d_board_vec.end(), d_board_copy.begin(), is_valid_struct());
-    d_board_copy.erase(end, d_board_copy.end());
+    // removes all invalid boards from the vector
+    d_board_vec.erase(thrust::remove_if(d_board_vec.begin(), d_board_vec.end(),
+                is_valid_struct()), d_board_vec.end());
+
+    size_t size = d_board_vec.size();
+    LOG_PRINTF("output size     : %d\n", size);
+    Board *host_output = new Board[size];
+    Board* dv_ptr = thrust::raw_pointer_cast(d_board_vec.data());
+    CUDA_SAFE_CALL(cudaMemcpy(host_output, dv_ptr, size * sizeof(Board), cudaMemcpyDeviceToHost));
+
+    d_board_vec.clear();
+    d_board_vec.shrink_to_fit();
     CUDA_SAFE_CALL(cudaFree(dev_boards));
 
-    size_t size = d_board_copy.size();
-    LOG_PRINTF("output size     : %d\n", size);
-    
-    Board *host_output = new Board[size];
-    Board* dv_ptr = thrust::raw_pointer_cast(d_board_copy.data());
-
-    CUDA_SAFE_CALL(cudaMemcpy(host_output, dv_ptr, size * sizeof(Board),
-                cudaMemcpyDeviceToHost));
-    // TODO
-    // implemente alpha-beta pruning for splits to reduce extra work
-    /*if (false && size > MAX_SIZE) {
-        LOG_PRINTF("splitting...\n");
-        for (int i = 0 ; i < size ; i += MAX_SIZE) {
-            if (size < i + MAX_SIZE) {
-                work_down(&host_output[i], size - i, !vertical, depth + 1);
-            } else {
-                work_down(&host_output[i], MAX_SIZE, !vertical, depth + 1);
-            } 
-        }
-    } else {
-        char *result = work_down(host_output, size, !vertical, depth + 1);
+    if (size == 0) {
         char *winners = new char[inCount];
         for (int i = 0 ; i < inCount ; i++) {
-            winners[i] = PREV_WIN;
-            for (int j = 0 ; j < branching ; j++) {
-                if (result[i * branching + j] == PREV_WIN) {
-                    winners[i] = NEXT_WIN;
-                    break;
-                }
-            }
+            winners[i] = 'P';
         }
-        return winners;   
+        delete[] host_output;
+        return winners;
+    } else {
+        char *nextWinners = work_down(host_output, size, !vertical, depth + 1);
+        char *winners = new char[inCount];
+        int offset = 0;
+        for (int i = 0 ; i < inCount ; i++) {
+            char winner = 'P';
+            while (offset < size && host_output[offset].parent == i) {
+                if (nextWinners[offset] == 'P') {
+                    winner = 'N';
+                }
+                offset++;
+            }
+            winners[i] = winner;
+        }
+        delete[] nextWinners;
+        delete[] host_output;
+        return winners;
     }
-    delete[] host_output; */
-    work_down(host_output, size, !vertical, depth + 1);
+    
+
+    
+
 }
 
 
@@ -291,7 +288,9 @@ int main(void) {
     memset(&inputBoards[0], 0, sizeof(Board));
     set_valid(&inputBoards[0], true);
 
-    work_down(inputBoards, 1, true, 0);
+    char *winner = work_down(inputBoards, 1, true, 0);
+    printf("winner vertical first: %c\n", winner[0]);
+    delete[] winner;
     delete[] inputBoards;
     return 0;
 }

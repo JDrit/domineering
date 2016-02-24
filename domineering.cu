@@ -1,12 +1,14 @@
 #include "domineering.h"
 
-#define X_MAX 11
-#define Y_MAX 4
-#define MAX_SIZE 50000
+#define X_MAX 5
+#define Y_MAX 5
+#define MAX_SIZE 1500000
 
 #define NO_WINNER -1
 #define NEXT_WIN 1
 #define PREV_WIN 2
+
+using namespace std;
 
 void outOfMemHandler() {
     LOG_FPRINTF(stderr, "Unable to satisfy request for memory\n");
@@ -228,6 +230,7 @@ char* work_down(Board* input, int inCount, bool vertical, int depth) {
     size_t N = outCount;
     thrust::device_ptr<Board> d_board_ptr = thrust::device_pointer_cast(dev_boards);
     thrust::device_vector<Board> d_board_vec(d_board_ptr, d_board_ptr + N);
+    CUDA_SAFE_CALL(cudaFree(dev_boards));
 
     // removes all invalid boards from the vector
     d_board_vec.erase(thrust::remove_if(d_board_vec.begin(), d_board_vec.end(),
@@ -241,12 +244,38 @@ char* work_down(Board* input, int inCount, bool vertical, int depth) {
 
     d_board_vec.clear();
     d_board_vec.shrink_to_fit();
-    CUDA_SAFE_CALL(cudaFree(dev_boards));
 
     if (size == 0) {
         char *winners = new char[inCount];
         for (int i = 0 ; i < inCount ; i++) {
             winners[i] = 'P';
+        }
+        delete[] host_output;
+        return winners;
+    } else if (size > MAX_SIZE) {
+        LOG_PRINTF("splitting...\n");
+        char *winners = new char[inCount];
+        vector<char> nextWins;
+
+        for (int i = 0 ; i < size ; i += MAX_SIZE) {
+            size_t nextSize = (size < i + MAX_SIZE) ? size - i : MAX_SIZE;
+            char *nextWinners = work_down(&host_output[i], nextSize, !vertical, depth + 1); 
+            for (int j = 0 ; j < nextSize ; j++) {
+                nextWins.push_back(nextWinners[j]); 
+            }
+            delete[] nextWinners;
+        }
+        
+        int offset = 0;
+        for (int i = 0 ; i < inCount ; i++) {
+            char winner = 'P';
+            while (offset < size && host_output[offset].parent == i) {
+                if (nextWins[offset] == 'P') {
+                    winner = 'N';
+                }
+                offset++;
+            }
+            winners[i] = winner;
         }
         delete[] host_output;
         return winners;
